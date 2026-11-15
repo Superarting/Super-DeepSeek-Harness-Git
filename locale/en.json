@@ -1,0 +1,19 @@
+{
+  "meta": {
+    "title": "Super-DeepSeek-Harness Git",
+    "description": "One-click sync of your DeepSeek Harness profile (config, skills, plugin data, sessions) to a private GitHub repository, and restore it on any new machine. Sign in with a fine-grained personal access token; the token is stored in the encrypted credential store, never in configuration. Sidebar GitHub icon opens: account, Sync now (with progress), Settings (choose what to sync), Sign out, Uninstall guide.",
+    "detail": "docs/DETAIL.md"
+  },
+  "menu": {
+    "account": "GitHub account",
+    "notSignedIn": "Not signed in",
+    "syncNow": "Sync now",
+    "syncing": "Syncing…",
+    "settings": "Settings…",
+    "signOut": "Sign out",
+    "uninstall": "Uninstall plugin",
+    "syncDone": "Synced",
+    "syncFailed": "Sync failed",
+    "needRepo": "Set the repository in Settings first"
+  }
+}

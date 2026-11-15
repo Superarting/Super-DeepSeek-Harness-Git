@@ -1,0 +1,19 @@
+{
+  "meta": {
+    "title": "Super-DeepSeek-Harness Git",
+    "description": "把 DeepSeek Harness 的全局配置(设置、技能、插件数据、会话历史)一键同步到你的 GitHub 私有仓库,换新电脑时拉取恢复。用 GitHub 细粒度个人令牌登录;令牌保存在加密凭证库中,绝不写入配置。侧边栏 GitHub 图标菜单:账户状态、立即同步(显示进度)、设置(选择同步内容)、退出账户、卸载指引。",
+    "detail": "docs/DETAIL.zh.md"
+  },
+  "menu": {
+    "account": "GitHub 账户",
+    "notSignedIn": "未登录",
+    "syncNow": "立即同步",
+    "syncing": "同步中…",
+    "settings": "设置…",
+    "signOut": "退出账户",
+    "uninstall": "卸载插件",
+    "syncDone": "同步完成",
+    "syncFailed": "同步失败",
+    "needRepo": "请先在设置里填写仓库地址"
+  }
+}
