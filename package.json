@@ -1,6 +1,6 @@
 {
   "name": "super-deepseek-harness-git",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "private": true,
   "type": "module",
   "description": "Super-DeepSeek-Harness Git sync: settings-pane GitHub section to sign in, push DSH config to your private repo via the REST API (works behind git-blocked corporate networks), and restore on a new machine",

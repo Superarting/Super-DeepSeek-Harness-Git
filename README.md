@@ -14,7 +14,12 @@ DeepSeek Harness (DSH) 插件 — 把你的 DSH 全局配置(模型/代理/MCP/�
 
 ## 安装
 
+安装脚本全程自动探测 DeepSeek Harness 的实际安装位置(数据目录、运行时 node、pnpm),
+无需手工指定路径;找不到时按顺序回退(环境变量 → DSH 运行时 → 应用内置 Electron → 系统 PATH)。
+
 ### 方式 A:一键脚本(推荐)
+
+**macOS / Linux(Terminal):**
 
 ```bash
 git clone https://github.com/Superarting/Super-DeepSeek-Harness-Git.git
@@ -22,9 +27,23 @@ cd Super-DeepSeek-Harness-Git
 ./install.sh
 ```
 
-脚本自动:链接插件到当前 profile → 安装依赖 → 注册到 cordis.patch.yml。完成后重启 DeepSeek Harness。
+**Windows(PowerShell):**
 
-### 方式 B:手动
+```powershell
+git clone https://github.com/Superarting/Super-DeepSeek-Harness-Git.git
+cd Super-DeepSeek-Harness-Git\super-dsh-git
+.\install.ps1
+```
+
+> 若执行策略限制,先用 `Set-ExecutionPolicy -Scope Process Bypass` 放行当前会话。
+
+脚本自动:定位 DSH 环境与 profile → 链接插件到当前 profile → 安装依赖 → 注册到
+`dsh.profile.bundles` 或 `cordis.patch.yml`(双通道去重,不会重复注册)。完成后重启 DeepSeek Harness。
+
+可选环境变量(一般无需设置,自动探测失败时才用):`DSH_HOME`、`DSH_PROFILE`、
+`DSH_NODE_EXECUTABLE`、`DSH_PNPM_SCRIPT`、`DSH_APP_DIR`(应用安装目录)。
+
+### 方式 B:手动(跨平台)
 
 ```bash
 git clone https://github.com/Superarting/Super-DeepSeek-Harness-Git.git
@@ -63,11 +82,15 @@ ELECTRON_RUN_AS_NODE=1 "$DSH_NODE_EXECUTABLE" \
 
 | 版本 | 说明 |
 |---|---|
+| 1.1.2 | 安装脚本跨平台自动探测:自动定位 DSH 数据目录/profile/运行时 node/pnpm(含应用内 Electron),新增 Windows install.ps1;注册双通道去重,不再重复写入 |
+| 1.1.1 | 移除自动发布实验(改为手动版本控制) |
 | 1.1.0 | 推送/恢复引擎切换到 GitHub REST API(绕开 git 协议封锁);修复成功后进度条卡 99%;补充 armory/our-free-model 缓存文件同步 |
 | 1.0.0 | 首版:设置分区 UI、git 协议推送、逐项勾选、自动发现 |
 
 ## 文档
 
+- **[完整使用指南(中)](docs/GUIDE.zh.md)** — 安装、令牌创建、日常使用、同步明细、安全说明、FAQ、迁移流程
+- [Full Guide (EN)](docs/GUIDE.md)
 - [设计细节(中)](docs/DETAIL.zh.md) / [Design details (EN)](docs/DETAIL.md)
 
 ## License
