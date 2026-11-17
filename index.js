@@ -20,7 +20,6 @@ const crypto = await import('node:crypto')
 
 const NS = 'super-dsh-git'
 const TOKEN_KEY = `${NS}/github-token`
-const PUBLISH_TOKEN_KEY = `${NS}/publish-token`
 const STAGING = `${NS}/staging`
 const BRANCH = 'main'
 const API = 'https://api.github.com'
@@ -182,19 +181,6 @@ async function readToken(ctx) {
     if (record?.kind === 'api-key' && typeof record.key === 'string' && record.key.length > 0) return record.key
   } catch { /* absent */ }
   return undefined
-}
-
-/** Optional dedicated token for self-publish (source repo). Falls back to the
- * main sync token when absent. */
-async function readPublishToken(ctx) {
-  const credentials = ctx.credentials
-  if (credentials !== undefined) {
-    try {
-      const record = await credentials.readRecord(PUBLISH_TOKEN_KEY)
-      if (record?.kind === 'api-key' && typeof record.key === 'string' && record.key.length > 0) return record.key
-    } catch { /* absent → fall through */ }
-  }
-  return readToken(ctx)
 }
 
 async function writeToken(ctx, token) {
@@ -507,18 +493,6 @@ async function routeRequest(ctx, config, request) {
       await saveConfig(ctx, { accountLogin: '' }).catch(() => {})
       return Response.json({ ok: true })
     }
-    if (op === 'publishToken') {
-      const raw = String(body.token ?? '').trim()
-      const credentials = ctx.credentials
-      if (credentials === undefined) return Response.json({ ok: false, message: 'credential store unavailable' }, { status: 500 })
-      if (raw === '') {
-        await credentials.deleteRecord(PUBLISH_TOKEN_KEY).catch(() => {})
-        return Response.json({ ok: true, cleared: true })
-      }
-      if (raw.length < 20) return Response.json({ ok: false, message: 'token looks too short' }, { status: 400 })
-      await credentials.modifyRecord(PUBLISH_TOKEN_KEY, async () => ({ kind: 'api-key', key: raw }))
-      return Response.json({ ok: true })
-    }
     if (op === 'settings') {
       const patch = { repoUrl: String(body.repoUrl ?? '').trim() }
       if (body.itemStates !== undefined && typeof body.itemStates === 'object' && !Array.isArray(body.itemStates)) {
@@ -574,77 +548,6 @@ async function routeRequest(ctx, config, request) {
   return Response.json({ ok: false, message: 'unknown op' }, { status: 400 })
 }
 
-// ---------- self-publish: plugin source → Super-DeepSeek-Harness-Git ----------
-
-const SELF_REPO = 'Superarting/Super-DeepSeek-Harness-Git'
-
-/** Local plugin source files. The published repo root IS this plugin
- * directory (package.json sits next to index.js), so the root is dirname of
- * this module — never the parent. */
-async function selfSourceFiles(fs, path) {
-  const root = path.dirname(new URL(import.meta.url).pathname)
-  const out = new Map()
-  const walk = async (dir, relBase) => {
-    let entries
-    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }) } catch { return }
-    for (const entry of entries) {
-      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === '.DS_Store') continue
-      const full = path.join(dir, entry.name)
-      const rel = relBase === '' ? entry.name : `${relBase}/${entry.name}`
-      if (entry.isDirectory()) await walk(full, rel)
-      else if (entry.isFile()) {
-        const content = await fs.promises.readFile(full).catch(() => undefined)
-        if (content !== undefined) out.set(rel, content)
-      }
-    }
-  }
-  await walk(root, '')
-  return out
-}
-
-async function publishSelf(ctx, token, log) {
-  const { fs, path } = await nodeModules()
-  const slug = SELF_REPO
-  const call = gh(token)
-  const files = await selfSourceFiles(fs, path)
-  if (files.size === 0) return { pushed: false, reason: 'no source files' }
-  let base
-  let baseTree
-  try {
-    const ref = await call(`/repos/${slug}/git/ref/heads/${BRANCH}`)
-    base = ref.object.sha
-    const commit = await call(`/repos/${slug}/git/commits/${base}`)
-    baseTree = commit.tree.sha
-  } catch {
-    return { pushed: false, reason: 'source repo has no main branch (publish once manually first)' }
-  }
-  const remote = new Map()
-  const tree = await call(`/repos/${slug}/git/trees/${baseTree}?recursive=1`)
-  for (const entry of tree.tree) {
-    if (entry.type === 'blob') remote.set(entry.path, entry.sha)
-  }
-  const entries = []
-  const localPaths = new Set(files.keys())
-  for (const [remotePath, sha] of remote) {
-    if (!localPaths.has(remotePath)) entries.push({ path: remotePath, mode: '100644', type: 'blob', sha: null })
-  }
-  let changed = 0
-  for (const [rel, content] of files) {
-    const sha = gitSha1('blob', content)
-    if (remote.get(rel) === sha) continue
-    await call(`/repos/${slug}/git/blobs`, { method: 'POST', body: { content: content.toString('base64'), encoding: 'base64' }, label: 'self blob' })
-    entries.push({ path: rel, mode: '100644', type: 'blob', sha })
-    changed += 1
-  }
-  if (changed === 0 && entries.length === 0) return { pushed: false, reason: 'already up to date' }
-  const newTree = await call(`/repos/${slug}/git/trees`, { method: 'POST', body: { base_tree: baseTree, tree: entries }, label: 'self tree' })
-  const message = `auto-publish from plugin (${new Date().toISOString()}) — ${changed} changed`
-  const commit = await call(`/repos/${slug}/git/commits`, { method: 'POST', body: { message, tree: newTree.sha, parents: [base] }, label: 'self commit' })
-  await call(`/repos/${slug}/git/refs/heads/${BRANCH}`, { method: 'PATCH', body: { sha: commit.sha }, label: 'self ref' })
-  log?.('info', `self-published ${changed} changed file(s) → ${slug} @ ${commit.sha.slice(0, 8)}`)
-  return { pushed: true, commit: commit.sha.slice(0, 8), changed }
-}
-
 // ---------- apply ----------
 
 export async function apply(ctx, config) {
@@ -670,25 +573,4 @@ export async function apply(ctx, config) {
       if (now - stat.mtimeMs > 3_600_000) await fs.promises.rm(full, { recursive: true, force: true })
     }
   } catch { /* best effort */ }
-
-  // Auto-publish: when the plugin (re)loads, compare local source with the
-  // GitHub source repo and push any drift. Uses the signed-in token; runs in
-  // the background and never blocks mount. A token without write access to
-  // the source repo simply logs and skips.
-  ctx.effect(() => {
-    const timer = setTimeout(() => {
-      void (async () => {
-        try {
-          const log = (level, msg) => ctx.logger?.[level]?.(`[${NS}] ${msg}`)
-          const token = await readPublishToken(ctx)
-          if (token === undefined) return log('info', 'self-publish skipped: not signed in')
-          const result = await publishSelf(ctx, token, log)
-          if (!result.pushed) log('info', `self-publish skipped: ${result.reason}`)
-        } catch (error) {
-          ctx.logger?.warn?.(`[${NS}] self-publish failed: ${String(error?.message ?? error)}`)
-        }
-      })()
-    }, 8_000)
-    return () => clearTimeout(timer)
-  }, `${NS}: self-publish on mount`)
 }
