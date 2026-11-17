@@ -41,6 +41,12 @@ window.__ModuleLoader__.load({
         needSignIn: 'Sign in first',
         localRepo: 'Private repo only · credentials never sync',
         confirmSignOut: 'Sign out of GitHub on this machine?',
+        selfPublish: 'Self-publish (plugin source → GitHub)',
+        publishTokenLabel: 'Publish token (classic PAT with repo scope, or fine-grained with write access to the source repo)',
+        publishTokenSaved: 'Saved — plugin source auto-publishes to Super-DeepSeek-Harness-Git whenever this plugin updates',
+        publishTokenSavedMsg: 'Publish token saved — auto-publish enabled ✓',
+        selfPublishHint: 'Runs once after each plugin reload; pushes only when the source actually changed.',
+        save: 'Save',
       },
       zh: {
         nav: 'GitHub 同步',
@@ -67,6 +73,12 @@ window.__ModuleLoader__.load({
         needSignIn: '请先登录',
         localRepo: '仅私有仓库 · 凭证永不同步',
         confirmSignOut: '在这台电脑上退出 GitHub 登录?',
+        selfPublish: '自我发布(插件源码 → GitHub)',
+        publishTokenLabel: '发布令牌(经典 PAT 勾选 repo,或对源码仓库有写权限的细粒度 PAT)',
+        publishTokenSaved: '已保存 — 本插件每次更新后,源码将自动发布到 Super-DeepSeek-Harness-Git',
+        publishTokenSavedMsg: '发布令牌已保存 — 自动发布已启用 ✓',
+        selfPublishHint: '插件每次重载后运行一次;仅当源码真正变化时才推送。',
+        save: '保存',
       },
     }
     let currentLocale = 'zh'
@@ -155,6 +167,8 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState('')
       const [msg, setMsg] = React.useState(undefined)
       const [showToken, setShowToken] = React.useState(false)
+      const [pubToken, setPubToken] = React.useState('')
+      const [showPubToken, setShowPubToken] = React.useState(false)
 
       const refresh = React.useCallback((withItems = true) => {
         api('state').then((value) => { setState(value); setRepo(value.repoUrl ?? '') }).catch(() => {})
@@ -216,6 +230,15 @@ window.__ModuleLoader__.load({
         setItems((prev) => prev.map((entry) => entry.id === item.id ? { ...entry, enabled: !entry.enabled } : entry))
         try { await post('settings', { itemStates: next }) } catch { refresh(true) }
       }
+      const savePubToken = async () => {
+        setBusy('pubtoken'); setMsg(undefined)
+        try {
+          await post('publishToken', { token: pubToken.trim() })
+          setPubToken(''); setShowPubToken(false)
+          setMsg({ kind: 'ok', text: t('publishTokenSavedMsg') })
+        } catch (error) { setMsg({ kind: 'err', text: String(error.message ?? error) }) }
+        setBusy('')
+      }
 
       return h('div', { style: S.section },
         h('p', { style: S.intro }, t('intro')),
@@ -258,6 +281,19 @@ window.__ModuleLoader__.load({
           active !== undefined && h('div', { style: S.progress }, h('i', { style: S.progressFill(active.percent) })),
           active !== undefined && h('div', { style: S.remote }, (push.running ? t('syncing', { p: push.percent }) : t('restoring', { p: pull.percent }))),
           msg !== undefined && h('div', { style: msg.kind === 'ok' ? S.msgOk : S.msgErr }, msg.text)),
+
+        h('div', { style: S.block },
+          h('div', { style: S.blockTitle }, t('selfPublish')),
+          h('div', { style: S.field },
+            h('label', { style: S.fieldLabel }, t('publishTokenLabel')),
+            showPubToken
+              ? h('input', { style: S.input, type: 'password', value: pubToken, autoFocus: true, onChange: (e) => setPubToken(e.target.value),
+                  onKeyDown: (e) => { if (e.key === 'Enter' && pubToken.trim().length >= 20) savePubToken() } })
+              : h('div', { style: S.remote }, t('publishTokenSaved'))),
+          showPubToken && h('div', { style: S.btnRow },
+            h('button', { style: S.btn(true, pubToken.trim().length < 20 || busy === 'pubtoken'), onClick: savePubToken },
+              busy === 'pubtoken' ? '…' : t('save'))),
+          h('div', { style: S.remote }, t('selfPublishHint'))),
 
         h('div', { style: S.block },
           h('div', { style: S.blockTitle }, t('whatSync'),
