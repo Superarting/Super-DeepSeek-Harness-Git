@@ -21,7 +21,15 @@ const crypto = await import('node:crypto')
 const NS = 'super-dsh-git'
 const TOKEN_KEY = `${NS}/github-token`
 const STAGING = `${NS}/staging`
+/** Non-secret settings mirrored outside the profile so a DSH upgrade or a
+ * rebuilt profile does not force the user to re-enter the repo URL / login. */
+const SETTINGS_FILE = `${NS}/settings.json`
+/** Sync history (local audit trail) stored outside the profile. */
+const HISTORY_FILE = `${NS}/history.json`
 const BRANCH = 'main'
+const MAX_HISTORY = 30
+const BACKUP_DIR = `${NS}/backups`
+const BACKUP_MAX = 20
 const API = 'https://api.github.com'
 const MAX_BLOB_BYTES = 80 * 1024 * 1024
 const DISCOVER_MAX = 40
@@ -54,6 +62,106 @@ function dshDir() {
   const dir = `${home()}/.dsh`
   const profile = process.env.DSH_PROFILE ?? 'desktop'
   return { dir, profileDir: `${dir}/profiles/${profile}`, profile }
+}
+
+// ---------- persistent, profile-independent settings mirror ----------
+
+function settingsPath() {
+  return `${dshDir().dir}/${SETTINGS_FILE}`
+}
+
+async function readMirror(fs) {
+  try {
+    const raw = await fs.promises.readFile(settingsPath(), 'utf8')
+    const parsed = JSON.parse(raw)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+/** Merge live profile config with the persistent mirror. The profile value
+ * wins when present; the mirror fills anything missing (e.g. after upgrade). */
+async function withMirror(fs, config) {
+  const mirror = await readMirror(fs)
+  return {
+    ...config,
+    repoUrl: config.repoUrl || mirror.repoUrl || '',
+    accountLogin: config.accountLogin || mirror.accountLogin || '',
+    itemStates: { ...(mirror.itemStates ?? {}), ...(config.itemStates ?? {}) },
+  }
+}
+
+async function writeMirror(fs, patch) {
+  const current = await readMirror(fs)
+  const next = { ...current, ...patch }
+  await fs.promises.mkdir(dshDir().dir, { recursive: true })
+  await fs.promises.writeFile(settingsPath(), JSON.stringify(next, null, 2))
+  return next
+}
+
+// ---------- local backup (before push/pull) ----------
+
+function backupPath() {
+  return `${dshDir().dir}/${BACKUP_DIR}`
+}
+
+async function ensureBackupDir(fs) {
+  await fs.promises.mkdir(backupPath(), { recursive: true })
+}
+
+async function readBackupList(fs) {
+  await ensureBackupDir(fs)
+  const names = await fs.promises.readdir(backupPath()).catch(() => [])
+  const out = []
+  for (const name of names) {
+    const stat = await fs.promises.stat(`${backupPath()}/${name}`).catch(() => undefined)
+    if (!stat?.isFile() || !name.endsWith('.json')) continue
+    try {
+      const content = JSON.parse(await fs.promises.readFile(`${backupPath()}/${name}`, 'utf8'))
+      out.push(content)
+    } catch { /* skip corrupt */ }
+  }
+  out.sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
+  return out.slice(0, BACKUP_MAX)
+}
+
+async function writeBackup(fs, entry) {
+  await ensureBackupDir(fs)
+  const at = Date.now()
+  const name = `${at}-${Math.random().toString(36).slice(2, 8)}.json`
+  await fs.promises.writeFile(`${backupPath()}/${name}`, JSON.stringify({ ...entry, at }, null, 2))
+  const list = await readBackupList(fs)
+  for (const stale of list.slice(BACKUP_MAX)) {
+    await fs.promises.rm(`${backupPath()}/${stale.id ?? stale.at}.json`).catch(() => {})
+  }
+}
+
+// ---------- sync history ----------
+
+function historyPath() {
+  return `${dshDir().dir}/${HISTORY_FILE}`
+}
+
+async function readHistory(fs) {
+  try {
+    const raw = await fs.promises.readFile(historyPath(), 'utf8')
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+async function writeHistory(fs, entries) {
+  await fs.promises.mkdir(dshDir().dir, { recursive: true })
+  await fs.promises.writeFile(historyPath(), JSON.stringify(entries.slice(-MAX_HISTORY), null, 2))
+}
+
+async function recordHistory(fs, op, summary) {
+  const list = await readHistory(fs)
+  list.push({ at: Date.now(), op, ...summary })
+  await writeHistory(fs, list)
 }
 
 function repoSlug(repoUrl) {
@@ -281,10 +389,66 @@ async function walk(fs, path, entry, dir, files) {
   }
 }
 
+// ---------- diff preview (push/pull dry-run, no writes) ----------
+
+async function runDiff(ctx, config) {
+  const { fs, path } = await nodeModules()
+  const slug = repoSlug(config.repoUrl)
+  if (slug === undefined) throw new Error('invalid repository URL')
+  const token = await readToken(ctx)
+  if (token === undefined) throw new Error('not signed in')
+  const call = gh(token)
+  const { enabled } = await effectiveItems(config)
+
+  const localFiles = (await collectFiles(fs, path, config)).filter((file) => file.size <= MAX_BLOB_BYTES)
+  const localKeys = new Set(localFiles.map((file) => normalizeKey(file.key)))
+  const localSha = new Map()
+  for (const file of localFiles) {
+    const content = await fs.promises.readFile(file.abs).catch(() => undefined)
+    if (content !== undefined) localSha.set(normalizeKey(file.key), gitSha1('blob', content))
+  }
+
+  // Remote tree snapshot (empty when the repo has no branch yet).
+  const remoteSha = new Map()
+  try {
+    const ref = await call(`/repos/${slug}/git/ref/heads/${BRANCH}`)
+    const commit = await call(`/repos/${slug}/git/commits/${ref.object.sha}`)
+    const tree = await call(`/repos/${slug}/git/trees/${commit.tree.sha}?recursive=1`)
+    for (const entry of tree.tree) {
+      if (entry.type === 'blob') remoteSha.set(entry.path, entry.sha)
+    }
+  } catch { /* empty repo → everything is an addition */ }
+
+  // Keys within enabled items' scope (both local and remote views).
+  const inScope = (key) => enabled.some((item) => item.entries.some((entry) => {
+    const norm = normalizeKey(entry.key)
+    return key === norm || key.startsWith(`${norm}/`)
+  }))
+
+  const additions = []
+  const modifications = []
+  const deletions = []
+  for (const [key, sha] of remoteSha) {
+    if (!inScope(key)) continue
+    if (!localKeys.has(key)) { deletions.push(key); continue }
+    if (localSha.get(key) !== sha) modifications.push(key)
+  }
+  for (const key of localKeys) {
+    if (!remoteSha.has(key)) additions.push(key)
+  }
+  return {
+    additions: additions.sort(),
+    modifications: modifications.sort(),
+    deletions: deletions.sort(),
+    total: additions.length + modifications.length + deletions.length,
+  }
+}
+
 // ---------- push via REST ----------
 
 async function runPush(ctx, config, token, onStage) {
   const { fs, path, os } = await nodeModules()
+  await writeBackup(fs, { op: 'push', configSnapshot: { repoUrl: config.repoUrl, accountLogin: config.accountLogin } })
   const slug = repoSlug(config.repoUrl)
   if (slug === undefined) throw new Error('invalid repository URL')
   const call = gh(token)
@@ -375,6 +539,7 @@ function legacyAltKey(normKey) {
 
 async function runPull(ctx, config, token, onStage) {
   const { fs, path } = await nodeModules()
+  await writeBackup(fs, { op: 'pull', configSnapshot: { repoUrl: config.repoUrl, accountLogin: config.accountLogin } })
   const slug = repoSlug(config.repoUrl)
   if (slug === undefined) throw new Error('invalid repository URL')
   const call = gh(token)
@@ -436,19 +601,24 @@ async function runPull(ctx, config, token, onStage) {
 
 // ---------- account state ----------
 
-async function accountState(token) {
+async function accountState(token, fallbackLogin) {
   if (token === undefined) return { signedIn: false }
+  // Cached identity when the network is down: a known login + a stored token
+  // is a reasonable "still signed in" signal; never flash a false sign-out.
+  const cached = typeof fallbackLogin === 'string' && fallbackLogin.length > 0
+    ? { signedIn: true, login: fallbackLogin, name: fallbackLogin, cached: true }
+    : { signedIn: false, network: true }
   try {
     const response = await fetch(`${API}/user`, {
       headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'super-deepseek-harness-git' },
       signal: AbortSignal.timeout(15_000),
     })
     if (response.status === 401) return { signedIn: false, invalid: true }
-    if (!response.ok) return { signedIn: false, network: true }
+    if (!response.ok) return cached
     const body = await response.json()
     return { signedIn: true, login: body.login, name: body.name ?? body.login, avatarUrl: body.avatar_url }
   } catch {
-    return { signedIn: false, network: true }
+    return cached
   }
 }
 
@@ -465,10 +635,23 @@ async function remoteHead(config, token) {
 }
 
 async function saveConfig(ctx, patch) {
+  const { fs } = await nodeModules()
   const entry = ctx.fiber?.entry
   const editor = ctx.configEditor
-  if (entry === undefined || editor === undefined) throw new Error('configuration cannot be saved in this profile')
-  await editor.edit(entry, (current) => ({ ...current, ...patch }))
+  if (entry !== undefined && editor !== undefined) {
+    await editor.edit(entry, (current) => ({ ...current, ...patch }))
+  }
+  // Always mirror non-secret settings so they survive a profile rebuild.
+  // If the profile editor was unavailable, the mirror still keeps the value.
+  const mirrorPatch = {}
+  if (patch.repoUrl !== undefined) mirrorPatch.repoUrl = patch.repoUrl
+  if (patch.accountLogin !== undefined) mirrorPatch.accountLogin = patch.accountLogin
+  if (patch.itemStates !== undefined) mirrorPatch.itemStates = patch.itemStates
+  if (Object.keys(mirrorPatch).length > 0) await writeMirror(fs, mirrorPatch)
+  if (entry === undefined || editor === undefined) {
+    // No editor but mirror written: report success so the UI does not loop retrying.
+    return
+  }
 }
 
 // ---------- routes ----------
@@ -501,6 +684,21 @@ async function routeRequest(ctx, config, request) {
       await saveConfig(ctx, patch)
       return Response.json({ ok: true })
     }
+    if (op === 'diff') {
+      const token = await readToken(ctx)
+      if (token === undefined) return Response.json({ ok: false, message: 'not signed in' }, { status: 401 })
+      if (!config.repoUrl) return Response.json({ ok: false, message: 'repository not configured' }, { status: 400 })
+      const preview = await runDiff(ctx, config)
+      return Response.json({ ok: true, ...preview })
+    }
+    if (op === 'history') {
+      const { fs } = await nodeModules()
+      return Response.json({ ok: true, history: await readHistory(fs) })
+    }
+    if (op === 'backup-list') {
+      const { fs } = await nodeModules()
+      return Response.json({ ok: true, backups: await readBackupList(fs) })
+    }
     if (op === 'push' || op === 'pull') {
       const kind = op
       if (progress.get(kind)?.running === true) return Response.json({ ok: false, message: 'another sync is running' }, { status: 409 })
@@ -509,17 +707,19 @@ async function routeRequest(ctx, config, request) {
       if (!config.repoUrl) return Response.json({ ok: false, message: 'repository not configured' }, { status: 400 })
       setProgress(kind, { running: true, percent: 1, stage: 'start', error: undefined, result: undefined })
       const onStage = (percent, stage) => setProgress(kind, { percent: Math.max(1, Math.min(99, percent)), stage })
-      void (async () => {
-        try {
-          const result = kind === 'push' ? await runPush(ctx, config, token, onStage) : await runPull(ctx, config, token, onStage)
-          setProgress(kind, {
-            running: false, percent: 100, stage: 'done', error: undefined,
-            result: { ...result, doneAt: Date.now() },
-          })
-        } catch (error) {
-          setProgress(kind, { running: false, percent: 100, stage: 'error', error: String(error?.message ?? error), finishedAt: Date.now(), result: undefined })
-        }
-      })()
+      const { fs } = await nodeModules()
+      try {
+        const result = kind === 'push' ? await runPush(ctx, config, token, onStage) : await runPull(ctx, config, token, onStage)
+        const summary = { kind, files: result.files ?? 0, skipped: result.skipped ?? 0, commit: result.commit }
+        await recordHistory(fs, 'sync', summary)
+        setProgress(kind, {
+          running: false, percent: 100, stage: 'done', error: undefined,
+          result: { ...result, doneAt: Date.now() },
+        })
+      } catch (error) {
+        await recordHistory(fs, 'sync', { kind, error: String(error?.message ?? error) })
+        setProgress(kind, { running: false, percent: 100, stage: 'error', error: String(error?.message ?? error), finishedAt: Date.now(), result: undefined })
+      }
       return Response.json({ ok: true, started: true })
     }
   }
@@ -541,9 +741,13 @@ async function routeRequest(ctx, config, request) {
       return Response.json({ ok: true, account: { signedIn: Boolean(config.accountLogin) }, repoUrl: config.repoUrl, push, pull })
     }
     const token = await readToken(ctx)
-    const account = await accountState(token)
+    const account = await accountState(token, config.accountLogin)
     const remote = account.signedIn ? await remoteHead(config, token) : undefined
-    return Response.json({ ok: true, account, repoUrl: config.repoUrl, push, pull, remote, profile: dshDir().profile })
+    const { fs } = await nodeModules()
+    return Response.json({
+      ok: true, account, repoUrl: config.repoUrl, push, pull, remote, profile: dshDir().profile,
+      history: await readHistory(fs), backups: await readBackupList(fs),
+    })
   }
   return Response.json({ ok: false, message: 'unknown op' }, { status: 400 })
 }
@@ -551,9 +755,10 @@ async function routeRequest(ctx, config, request) {
 // ---------- apply ----------
 
 export async function apply(ctx, config) {
-  const handler = (request) => {
+  const handler = async (request) => {
+    const { fs } = await nodeModules()
     const entry = ctx.fiber?.entry
-    return routeRequest(ctx, entry?.config ?? config, request)
+    return routeRequest(ctx, await withMirror(fs, entry?.config ?? config), request)
   }
   if (ctx.connection?.fetch?.register !== undefined) {
     ctx.effect(() => ctx.connection.fetch.register({

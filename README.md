@@ -82,6 +82,7 @@ ELECTRON_RUN_AS_NODE=1 "$DSH_NODE_EXECUTABLE" \
 
 | 版本 | 说明 |
 |---|---|
+| 1.2.0 | 登录/仓库地址持久化到 profile 外的 settings.json 镜像(升级/重建 profile 免重填);网络抖动时登录状态不再闪退;「重新扫描」增加 loading 与结果反馈;底部增加微信号 |
 | 1.1.2 | 安装脚本跨平台自动探测:自动定位 DSH 数据目录/profile/运行时 node/pnpm(含应用内 Electron),新增 Windows install.ps1;注册双通道去重,不再重复写入 |
 | 1.1.1 | 移除自动发布实验(改为手动版本控制) |
 | 1.1.0 | 推送/恢复引擎切换到 GitHub REST API(绕开 git 协议封锁);修复成功后进度条卡 99%;补充 armory/our-free-model 缓存文件同步 |

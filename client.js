@@ -27,6 +27,7 @@ window.__ModuleLoader__.load({
         tokenHint: 'Repository access: only your sync repo · Contents: Read and write',
         repoLabel: 'Repository (https://github.com/user/repo)',
         syncNow: 'Sync now',
+        syncNowAll: 'Sync all',
         restore: 'Restore from repo',
         syncing: 'Pushing… {p}%',
         restoring: 'Restoring… {p}%',
@@ -35,12 +36,34 @@ window.__ModuleLoader__.load({
         failed: 'Failed',
         whatSync: 'Sync items',
         reloadItems: 'Rescan ~/.dsh',
+        scanning: 'Scanning…',
+        scanDone: 'Scan complete · {n} items ({a} auto-discovered)',
+        scanFailed: 'Scan failed',
         discovered: 'auto',
         lastCommit: 'Remote',
+        syncHistory: 'Sync history',
+        noHistory: 'No sync history yet.',
+        historyOpPush: 'Push',
+        historyOpPull: 'Restore',
+        historyStatusOk: 'OK',
+        historyStatusErr: 'Error',
+        diffPreview: 'Diff preview',
+        diffAdd: '+ Add',
+        diffMod: '~ Modify',
+        diffDel: '- Delete',
+        confirmOverwrite: 'This will overwrite {n} local file(s) with remote content. Continue?',
+        cancel: 'Cancel',
+        confirm: 'Confirm',
         needRepo: 'Set the repository first',
         needSignIn: 'Sign in first',
-        localRepo: 'Private repo only · credentials never sync',
+        localRepo: 'Private repo only · credentials never sync · WeChat: Susuperoo',
         confirmSignOut: 'Sign out of GitHub on this machine?',
+        tokenExpired: 'Token expired or revoked — please sign in again.',
+        diffHint: 'Click "Sync all" to preview which files will be uploaded/deleted before syncing.',
+        diffNone: 'No changes.',
+        diffTitle: 'Pending changes',
+        startPush: 'Push now',
+        diffSection: 'Diff preview',
       },
       zh: {
         nav: 'GitHub 同步',
@@ -53,6 +76,7 @@ window.__ModuleLoader__.load({
         tokenHint: 'Repository access:仅你的同步仓库 · Contents:Read and write',
         repoLabel: '仓库地址(https://github.com/user/repo)',
         syncNow: '立即同步',
+        syncNowAll: '同步全部',
         restore: '从仓库恢复',
         syncing: '推送中… {p}%',
         restoring: '恢复中… {p}%',
@@ -61,12 +85,34 @@ window.__ModuleLoader__.load({
         failed: '失败',
         whatSync: '同步内容',
         reloadItems: '重新扫描 ~/.dsh',
+        scanning: '扫描中…',
+        scanDone: '扫描完成 · 共 {n} 项(自动发现 {a} 项)',
+        scanFailed: '扫描失败',
         discovered: '自动发现',
         lastCommit: '远端',
+        syncHistory: '同步历史',
+        noHistory: '暂无同步历史。',
+        historyOpPush: '推送',
+        historyOpPull: '恢复',
+        historyStatusOk: '成功',
+        historyStatusErr: '失败',
+        diffPreview: '变更预览',
+        diffAdd: '+ 新增',
+        diffMod: '~ 变更',
+        diffDel: '- 删除',
+        confirmOverwrite: '恢复将覆盖本地 {n} 个文件，确定继续？',
+        cancel: '取消',
+        confirm: '确定',
         needRepo: '请先填写仓库地址',
         needSignIn: '请先登录',
-        localRepo: '仅私有仓库 · 凭证永不同步',
+        localRepo: '仅私有仓库 · 凭证永不同步 · 微信号:Susuperoo',
         confirmSignOut: '在这台电脑上退出 GitHub 登录?',
+        tokenExpired: '令牌已失效或被撤销，请重新登录。',
+        diffHint: '点击「同步全部」先预览将要上传/删除的文件，确认后才会执行同步。',
+        diffNone: '无变更，本地与远端一致。',
+        diffTitle: '待同步变更',
+        startPush: '立即推送',
+        diffSection: '变更预览',
       },
     }
     let currentLocale = 'zh'
@@ -112,6 +158,12 @@ window.__ModuleLoader__.load({
       foot: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 12 },
       remote: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)' },
       miniBtn: { marginLeft: 'auto', padding: '3px 10px', fontSize: 11 },
+      historyTime: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', flex: 'none' },
+      historyOp: { fontSize: 11, marginLeft: 8, flex: 'none' },
+      historyTag: { fontSize: 11, marginLeft: 8, flex: 'none' },
+      diffHead: (color) => ({ fontSize: 11, fontWeight: 600, margin: '8px 0 4px', color }),
+      diffFile: { fontSize: 11, marginLeft: 14, color: 'var(--dsw-alias-label-secondary)' },
+      diffSummary: { fontSize: 12, margin: '4px 0' },
     }
 
     function GitHubIcon(size = 16) {
@@ -146,6 +198,21 @@ window.__ModuleLoader__.load({
       return `${(bytes / 1024 / 1024).toFixed(1)} MB`
     }
 
+    /** Flat diff list renderer: green additions, yellow modifications, red deletions. */
+    function renderDiffList(diff) {
+      const groups = [
+        { title: `${t('diffAdd')} ${diff.additions?.length ?? 0}`, color: 'var(--dsw-alias-state-success-primary)', items: diff.additions ?? [], sign: '+' },
+        { title: `${t('diffMod')} ${diff.modifications?.length ?? 0}`, color: 'var(--dsw-alias-state-warning-primary, #f1c40f)', items: diff.modifications ?? [], sign: '~' },
+        { title: `${t('diffDel')} ${diff.deletions?.length ?? 0}`, color: 'var(--dsw-alias-state-error-primary)', items: diff.deletions ?? [], sign: '-' },
+      ]
+      const total = groups.reduce((n, g) => n + g.items.length, 0)
+      if (total === 0) return h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 4 } }, t('diffNone'))
+      return h('div', { style: { ...S.items, marginTop: 8 } },
+        groups.filter((g) => g.items.length > 0).map((g) => h('div', { key: g.title },
+          h('div', { style: S.diffHead(g.color) }, g.title),
+          g.items.map((key) => h('div', { key, style: S.diffFile }, `${g.sign} ${key}`)))))
+    }
+
     // ---------- section component ----------
     function SyncSection() {
       const [state, setState] = React.useState(undefined)
@@ -154,7 +221,13 @@ window.__ModuleLoader__.load({
       const [repo, setRepo] = React.useState('')
       const [busy, setBusy] = React.useState('')
       const [msg, setMsg] = React.useState(undefined)
+      const [scanMsg, setScanMsg] = React.useState(undefined)
+      const [scanning, setScanning] = React.useState(false)
       const [showToken, setShowToken] = React.useState(false)
+      const [previewOpen, setPreviewOpen] = React.useState(false)
+      const [diff, setDiff] = React.useState(null)
+      const [confirmOpen, setConfirmOpen] = React.useState(false)
+      const [confirmOp, setConfirmOp] = React.useState(null)
 
       const refresh = React.useCallback((withItems = true) => {
         api('state').then((value) => { setState(value); setRepo(value.repoUrl ?? '') }).catch(() => {})
@@ -187,12 +260,7 @@ window.__ModuleLoader__.load({
       const syncing = push.running === true || pull.running === true
       const active = push.running ? push : (pull.running ? pull : undefined)
 
-      const startSync = async (op) => {
-        setMsg(undefined)
-        if (!repo.trim()) { setMsg({ kind: 'err', text: t('needRepo') }); return }
-        if (!signedIn) { setMsg({ kind: 'err', text: t('needSignIn') }); return }
-        try { await post(op, {}) } catch (error) { setMsg({ kind: 'err', text: String(error.message ?? error) }) }
-      }
+      const startSync = async (op) => { previewSync(op) }
       const doSignIn = async () => {
         setBusy('signin'); setMsg(undefined)
         try {
@@ -215,6 +283,45 @@ window.__ModuleLoader__.load({
         const next = { ...Object.fromEntries(items.map((entry) => [entry.id, entry.enabled])), [item.id]: !item.enabled }
         setItems((prev) => prev.map((entry) => entry.id === item.id ? { ...entry, enabled: !entry.enabled } : entry))
         try { await post('settings', { itemStates: next }) } catch { refresh(true) }
+      }
+      const rescan = async () => {
+        if (scanning) return
+        setScanning(true); setScanMsg(undefined)
+        try {
+          const value = await api('list')
+          const list = value.items ?? []
+          setItems(list)
+          const auto = list.filter((entry) => entry.discovered === true).length
+          setScanMsg({ kind: 'ok', text: t('scanDone', { n: list.length, a: auto }) })
+        } catch (error) {
+          setScanMsg({ kind: 'err', text: `${t('scanFailed')}: ${String(error.message ?? error)}` })
+        }
+        setScanning(false)
+      }
+      const previewSync = async (op) => {
+        if (!repo.trim()) { setMsg({ kind: 'err', text: t('needRepo') }); return }
+        if (!signedIn) { setMsg({ kind: 'err', text: t('needSignIn') }); return }
+        setMsg(undefined)
+        try {
+          const d = await api('diff')
+          setDiff(d)
+          setPreviewOpen(true)
+        } catch (error) { setMsg({ kind: 'err', text: String(error.message ?? error) }) }
+      }
+      const confirmSync = async (op) => {
+        if (!diff) return
+        const deletions = (diff.deletions || []).length
+        if (op === 'pull' && deletions > 0 && !window.confirm(t('confirmOverwrite', { n: deletions }))) return
+        setPreviewOpen(false)
+        setBusy(op === 'push' ? 'push' : 'pull'); setMsg(undefined)
+        try {
+          await post(op, {})
+          setDiff(null)
+          refresh(true)
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error.message ?? error) })
+        }
+        setBusy('')
       }
 
       return h('div', { style: S.section },
@@ -257,17 +364,40 @@ window.__ModuleLoader__.load({
             h('button', { style: S.btn(false, syncing || !signedIn), onClick: () => startSync('pull') }, t('restore'))),
           active !== undefined && h('div', { style: S.progress }, h('i', { style: S.progressFill(active.percent) })),
           active !== undefined && h('div', { style: S.remote }, (push.running ? t('syncing', { p: push.percent }) : t('restoring', { p: pull.percent }))),
+          account?.invalid === true && h('div', { style: S.msgErr }, t('tokenExpired')),
           msg !== undefined && h('div', { style: msg.kind === 'ok' ? S.msgOk : S.msgErr }, msg.text)),
 
         h('div', { style: S.block },
           h('div', { style: S.blockTitle }, t('whatSync'),
-            h('button', { style: { ...S.btn(false, false), ...S.miniBtn }, onClick: () => refresh(true) }, t('reloadItems'))),
+            h('button', { style: { ...S.btn(false, scanning), ...S.miniBtn }, disabled: scanning, onClick: rescan },
+              scanning ? t('scanning') : t('reloadItems'))),
           h('div', { style: S.items },
             items.map((item, index) => h('label', { style: { ...S.item, ...(index === items.length - 1 ? S.itemLast : {}) }, key: item.id },
               h('input', { style: S.checkbox, type: 'checkbox', checked: item.enabled === true, onChange: () => toggleItem(item) }),
               h('span', { style: S.itemLabel }, item.label,
                 item.discovered === true && h('span', { style: S.badge }, t('discovered'))),
-              h('span', { style: S.itemSize }, fmtSize(item.size)))))),
+              h('span', { style: S.itemSize }, fmtSize(item.size))))),
+          scanMsg !== undefined && h('div', { style: scanMsg.kind === 'ok' ? S.msgOk : S.msgErr }, scanMsg.text)),
+
+        h('div', { style: S.block },
+          h('div', { style: S.blockTitle }, t('diffPreview'),
+            h('button', { style: { ...S.btn(false, syncing || !signedIn), ...S.miniBtn }, disabled: syncing || !signedIn, onClick: () => previewSync('push') }, t('syncNowAll'))),
+          previewOpen && diff && renderDiffList(diff),
+          !previewOpen && h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 4 } }, t('diffHint'))),
+
+        h('div', { style: S.block },
+          h('div', { style: S.blockTitle }, t('syncHistory')),
+          (state?.history?.length ?? 0) > 0
+            ? h('div', { style: S.items },
+                state.history.slice(0, 10).map((rec) => h('div', { key: rec.at, style: { ...S.item, cursor: 'default' } },
+                  h('span', { style: S.historyTime }, new Date(rec.at).toLocaleString()),
+                  h('span', { style: S.historyOp }, rec.kind === 'push' ? t('historyOpPush') : t('historyOpPull')),
+                  rec.error
+                    ? h('span', { style: { ...S.historyTag, color: 'var(--dsw-alias-state-error-primary)' } }, t('historyStatusErr'))
+                    : h('span', { style: { ...S.historyTag, color: 'var(--dsw-alias-state-success-primary)' } }, t('historyStatusOk')),
+                  rec.files !== undefined && h('span', { style: S.remote }, `${rec.files} files`),
+                  rec.commit !== undefined && h('span', { style: S.remote }, rec.commit))))
+            : h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 4 } }, t('noHistory'))),
 
         h('div', { style: S.foot }, t('localRepo')))
     }
